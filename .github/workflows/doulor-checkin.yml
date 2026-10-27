@@ -1,0 +1,31 @@
+name: Doulor Cloud 签到
+
+on:
+  schedule:
+    - cron: '10 16 * * *'   # 北京时间每天 00:10
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: |
+          npm init -y
+          npm i playwright
+          npx playwright install --with-deps chromium
+
+      - name: 执行签到
+        env:
+          DOULOR_USER: ${{ secrets.DOULOR_USER }}
+          DOULOR_PASS: ${{ secrets.DOULOR_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node checkin.js
