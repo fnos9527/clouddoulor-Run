@@ -49,7 +49,7 @@ async function dismissPopups(page) {
   return clicked;
 }
 
-// 读取右上角（顶栏）的积分数字：在页面顶部、靠右的纯数字元素
+// 顶栏积分：页面顶部、靠右的纯数字元素
 async function readHeaderPoints(page) {
   const val = await page.evaluate(() => {
     const cands = [];
@@ -62,17 +62,28 @@ async function readHeaderPoints(page) {
         cands.push({ t, left: r.left });
       }
     }
-    cands.sort((a, b) => a.left - b.left); // 积分在铃铛/消息图标左侧，取最左的
+    cands.sort((a, b) => a.left - b.left);
     return cands.length ? cands[0].t : null;
   });
   return val === null ? null : parseInt(val, 10);
 }
 
-// 积分页面大数字
+// 积分页大数字
 async function readPagePoints(page) {
   const body = await page.locator('body').innerText();
   const m = body.match(/我的积分\s*(\d+)/);
   return m ? parseInt(m[1], 10) : null;
+}
+
+// 解析“每日签到”弹窗
+function parseSignDialog(text) {
+  const streak = text.match(/(\d+)\s*连续签到天数/);
+  const today = text.match(/今日已签\s*\+?\s*(\d+)/);
+  return {
+    streak: streak ? parseInt(streak[1], 10) : null,
+    todayGain: today ? parseInt(today[1], 10) : null,
+    signed: !!today,
+  };
 }
 
 (async () => {
@@ -102,29 +113,46 @@ async function readPagePoints(page) {
     await sleep(2000);
     await dismissPopups(page);
 
-    // 3. 记录签到前积分
+    // 3. 记录积分（注意：站点进站会自动签到，这里可能已包含今日签到积分）
     let before = await readHeaderPoints(page);
-    console.log('签到前积分(顶栏):', before);
+    console.log('进站后积分(顶栏):', before);
 
-    // 4. 点击积分进入积分页
+    // 4. 进入积分页
     await page.goto(`${BASE}/dashboard/points`, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    // 优先模拟真实点击顶栏积分；若失败则上面的直达链接已兜底
     await sleep(2000);
     await dismissPopups(page);
     if (before === null) before = await readPagePoints(page);
 
-    // 5. 点击签到
+    // 5. 点击“签到”，打开“每日签到”弹窗
     const signBtn = page.getByRole('button', { name: '签到', exact: true }).first();
     await signBtn.waitFor({ state: 'visible' });
-    const disabled = await signBtn.isDisabled().catch(() => false);
-    if (!disabled) {
-      await signBtn.click();
-      console.log('已点击签到');
-    } else {
-      console.log('签到按钮不可用，可能今天已签到');
-    }
+    await signBtn.click();
+    await page.getByText('每日签到').first().waitFor({ state: 'visible' });
+    await sleep(1500);
 
-    // 6. 等 2 秒 → 刷新 → 读积分
+    const dialog = page
+      .locator('[role="dialog"], [class*="modal"], [class*="dialog"]')
+      .filter({ hasText: '每日签到' })
+      .last();
+
+    let info = parseSignDialog(await page.locator('body').innerText());
+
+    // 如果弹窗里还没有“今日已签”，尝试在弹窗内点一下签到按钮
+    if (!info.signed) {
+      const claim = dialog.locator('button').filter({ hasText: /签到/ }).filter({ hasNotText: /自动签到|已签/ }).first();
+      if (await claim.isVisible().catch(() => false)) {
+        await claim.click().catch(() => {});
+        await sleep(2000);
+        info = parseSignDialog(await page.locator('body').innerText());
+      }
+    }
+    console.log('弹窗信息:', info);
+
+    // 弹窗截图（带详细说明）
+    const dialogShot = await page.screenshot();
+
+    // 6. 关闭弹窗 → 等 2 秒 → 刷新 → 读积分
+    await page.getByRole('button', { name: '关闭', exact: true }).first().click().catch(() => {});
     await sleep(2000);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await sleep(2000);
@@ -132,17 +160,16 @@ async function readPagePoints(page) {
     let after = await readPagePoints(page);
     if (after === null) after = await readHeaderPoints(page);
 
-    const gained = before !== null && after !== null ? after - before : null;
-    const shot = await page.screenshot();
+    const diff = before !== null && after !== null ? after - before : null;
 
     const msg =
       `✅ Doulor Cloud 签到完成\n` +
-      `签到前积分：${before ?? '未知'}\n` +
-      `签到后积分：${after ?? '未知'}\n` +
-      `本次增加：${gained ?? '未知'}` +
-      (disabled ? '\n（签到按钮不可用，可能今天已签到）' : '');
+      `连续签到天数：${info.streak ?? '未知'} 天\n` +
+      `今日已签：+${info.todayGain ?? '未知'} 积分${info.signed ? '' : '（弹窗未显示今日已签）'}\n` +
+      `当前积分：${after ?? '未知'}\n` +
+      `进站时积分：${before ?? '未知'}，刷新后积分：${after ?? '未知'}，期间变化：${diff ?? '未知'}`;
     console.log(msg);
-    await tgPhoto(shot, msg);
+    await tgPhoto(dialogShot, msg);
   } catch (e) {
     console.error(e);
     const shot = await page.screenshot().catch(() => null);
